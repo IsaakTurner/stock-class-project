@@ -1,0 +1,402 @@
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import datetime as dt
+import plotly.express as px
+import plotly.graph_objs as go
+import seaborn as sns
+import matplotlib.pyplot as plt
+from scipy.optimize import minimize
+import pandas_datareader.data as web
+
+class StockAnalysis:
+    def __init__(self, tickers, time_frame):
+        self.tickers = tickers
+        self.time_frame = time_frame
+        self.initial_investment = 1000000  # Fixed baseline portfolio value
+        self.risk_free_rate = self.get_risk_free_rate()
+        self.sim_runs = self.determine_simulation_runs()
+        self.start_date, self.end_date = self.calculate_dates()
+        self.data = self.get_stock_data()
+        self.adjusted_closing_prices_df = self.data.filter(regex='_Adj_Close$', axis=1)
+        self.daily_returns_df = self.calculate_daily_returns()
+        self.benchmark_tickers = ["^GSPC", "^DJI", "QQQ", "^IXIC"]  # S&P 500, Dow Jones, QQQ, Nasdaq
+        self.benchmark_data = self.get_benchmark_data()
+
+    def get_risk_free_rate(self):
+        end_date = dt.datetime.now()
+        start_date = end_date - dt.timedelta(days=30)
+        ten_year_rate = web.DataReader('DGS10', 'fred', start_date, end_date)
+        risk_free_rate = ten_year_rate.iloc[-1].values[0] / 100  # Convert to decimal
+        print(f"Risk-free rate (10-year Treasury rate): {risk_free_rate:.2%}")
+        return risk_free_rate
+
+    def determine_simulation_runs(self):
+        num_stocks = len(self.tickers)
+        if num_stocks < 5:
+            return 8000
+        elif 5 <= num_stocks <= 15:
+            return 12000
+        else:
+            return 15000
+
+    def calculate_dates(self):
+        end_date = dt.datetime.now()
+        if self.time_frame == 1:
+            start_date = end_date - dt.timedelta(days=365)
+        elif self.time_frame == 3:
+            start_date = end_date - dt.timedelta(days=3 * 365)
+        elif self.time_frame == 5:
+            start_date = end_date - dt.timedelta(days=5 * 365)
+        elif self.time_frame == 10:
+            start_date = end_date - dt.timedelta(days=10 * 365)
+        else:
+            print("Invalid selection. Defaulting to 1 year.")
+            start_date = end_date - dt.timedelta(days=365)
+        return start_date, end_date
+
+    def get_stock_data(self):
+        data_frames = []
+        for ticker in self.tickers:
+            stock = yf.Ticker(ticker)
+            stock_history = stock.history(start=self.start_date, end=self.end_date)
+            if 'Dividends' not in stock_history.columns:
+                stock_history['Dividends'] = 0.0
+            stock_history['Adj Close'] = stock_history['Close'] * (1 + stock_history['Dividends'].cumsum() / stock_history['Close'])
+            df = stock_history[['Open', 'High', 'Low', 'Close', 'Adj Close']].rename(columns={
+                'Open': f'{ticker.strip()}_Open',
+                'High': f'{ticker.strip()}_High',
+                'Low': f'{ticker.strip()}_Low',
+                'Close': f'{ticker.strip()}_Close',
+                'Adj Close': f'{ticker.strip()}_Adj_Close'
+            })
+            data_frames.append(df)
+        combined_data = pd.concat(data_frames, axis=1)
+        return combined_data
+
+    def get_benchmark_data(self):
+        data_frames = []
+        for ticker in self.benchmark_tickers:
+            benchmark = yf.Ticker(ticker)
+            benchmark_history = benchmark.history(start=self.start_date, end=self.end_date)
+            df = benchmark_history[['Close']].rename(columns={
+                'Close': f'{ticker.strip()}_Close'
+            })
+            data_frames.append(df)
+        combined_benchmark_data = pd.concat(data_frames, axis=1)
+        return combined_benchmark_data
+
+    def calculate_daily_returns(self):
+        return self.adjusted_closing_prices_df.pct_change().dropna()
+
+    def save_to_csv(self, df, filename):
+        df.to_csv(filename, index=True)
+
+    def plot_financial_data(self, data, title, y_label):
+        fig = go.Figure()
+        for column in data.columns:
+            fig.add_trace(go.Scatter(
+                x=data.index,
+                y=data[column],
+                mode='lines',
+                name=column
+            ))
+        fig.update_layout(
+            title=title,
+            xaxis_title="Date",
+            yaxis_title=y_label,
+            legend_title="Legend",
+            template="seaborn",
+            plot_bgcolor="white"
+        )
+        fig.show()
+
+    def plot_histogram(self):
+        fig = px.histogram(self.daily_returns_df.melt(), x='value', color='variable', barmode='overlay')
+        fig.update_layout(
+            title="Histogram of Daily Percent Returns",
+            xaxis_title="Daily % Change",
+            yaxis_title="Frequency",
+            template="seaborn",
+            plot_bgcolor="white"
+        )
+        fig.show()
+
+    def plot_stock_prices(self):
+        self.plot_financial_data(self.adjusted_closing_prices_df, "Unscaled Adjusted Closing Prices", "Adjusted Close Price")
+
+    def plot_scaled_prices(self):
+        scaled_prices_df = self.price_scaling(self.adjusted_closing_prices_df)
+        self.plot_financial_data(scaled_prices_df, "Scaled Adjusted Closing Prices", "Scaled Price")
+
+    def plot_stock_prices_with_smas(self):
+        sma_days = [100, 200]
+        sma_dataframes = []
+        for sma in sma_days:
+            sma_df = self.adjusted_closing_prices_df.apply(lambda x: x.rolling(window=sma).mean())
+            sma_df.columns = [f"{col.split('_Adj_Close')[0]}_{sma}SMA" for col in self.adjusted_closing_prices_df.columns]
+            sma_dataframes.append(sma_df)
+        sma_combined = pd.concat(sma_dataframes, axis=1)
+        adjusted_closing_prices_with_sma = pd.concat([self.adjusted_closing_prices_df, sma_combined], axis=1)
+        fig = go.Figure()
+        for column in adjusted_closing_prices_with_sma.filter(regex='_Adj_Close$', axis=1).columns:
+            stock_ticker = column.split('_Adj_Close')[0]
+            fig.add_trace(go.Scatter(
+                x=adjusted_closing_prices_with_sma.index,
+                y=adjusted_closing_prices_with_sma[column],
+                mode='lines',
+                name=f'{stock_ticker} Adjusted Close',
+                line=dict(width=2)
+            ))
+            for sma in sma_days:
+                fig.add_trace(go.Scatter(
+                    x=adjusted_closing_prices_with_sma.index,
+                    y=adjusted_closing_prices_with_sma[f'{stock_ticker}_{sma}SMA'],
+                    mode='lines',
+                    name=f'{stock_ticker} {sma}-Day SMA',
+                    line=dict(dash='dot', width=1.5),
+                    opacity=0.6
+                ))
+        fig.update_layout(
+            title="Stock Prices with SMAs (100-Day and 200-Day)",
+            xaxis_title="Date",
+            yaxis_title="Adjusted Close Price",
+            legend_title="Stock Tickers and Indicators",
+            template="seaborn",
+            plot_bgcolor="white"
+        )
+        fig.show()
+
+    def plot_correlation_matrix(self):
+        correlation_matrix = self.daily_returns_df.corr()
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(correlation_matrix, annot=True, cmap='crest', fmt=".2f", linewidths=0.5)
+        plt.title("Correlation Matrix of Daily Percentage Changes")
+        plt.show()
+
+    def price_scaling(self, raw_prices_df):
+        scaled_prices_df = raw_prices_df.copy()
+        for column in raw_prices_df.columns:
+            scaled_prices_df[column] = raw_prices_df[column] / raw_prices_df[column].iloc[0]
+        return scaled_prices_df
+
+    def generate_portfolio_weights(self, n):
+        weights = np.random.random(n)
+        weights /= weights.sum()
+        return weights
+
+    def generate_equal_weights(self, n):
+        return np.array([1/n] * n)
+
+    def asset_allocation(self, df, weights):
+        portfolio_df = pd.DataFrame(index=df.index)
+        scaled_df = self.price_scaling(df)
+        for i, stock in enumerate(scaled_df.columns):
+            portfolio_df[stock] = scaled_df[stock] * weights[i] * self.initial_investment
+        portfolio_df['Portfolio Value [$]'] = portfolio_df.sum(axis=1)
+        portfolio_df['Portfolio Daily Return [%]'] = portfolio_df['Portfolio Value [$]'].pct_change(1) * 100
+        portfolio_df.replace(np.nan, 0, inplace=True)
+        return portfolio_df
+
+    def simulation_engine(self, df, weights):
+        portfolio_df = self.asset_allocation(df, weights)
+        final_value = portfolio_df['Portfolio Value [$]'].iloc[-1]
+        initial_value = portfolio_df['Portfolio Value [$]'].iloc[0]
+        return_on_investment = ((final_value - initial_value) / initial_value) * 100
+        portfolio_daily_return_df = portfolio_df.drop(columns=['Portfolio Value [$]', 'Portfolio Daily Return [%]']).pct_change()
+        expected_portfolio_return = np.sum(weights * portfolio_daily_return_df.mean()) * 252
+        covariance = portfolio_daily_return_df.cov() * 252
+        expected_volatility = np.sqrt(np.dot(weights, np.dot(covariance, weights)))
+        sharpe_ratio = (expected_portfolio_return - self.risk_free_rate) / expected_volatility
+        return expected_portfolio_return, expected_volatility, sharpe_ratio, final_value, return_on_investment
+
+    def monte_carlo_simulation(self):
+        n = self.adjusted_closing_prices_df.shape[1]
+        weights_runs = np.zeros((self.sim_runs, n))
+        sharpe_ratio_runs = np.zeros(self.sim_runs)
+        expected_portfolio_returns_runs = np.zeros(self.sim_runs)
+        volatility_runs = np.zeros(self.sim_runs)
+        for i in range(self.sim_runs):
+            weights = self.generate_portfolio_weights(n)
+            weights_runs[i, :] = weights
+            (expected_portfolio_returns_runs[i], 
+            volatility_runs[i], 
+            sharpe_ratio_runs[i], 
+            _, _) = self.simulation_engine(self.adjusted_closing_prices_df, weights)
+            if (i + 1) % 1000 == 0 or i == self.sim_runs - 1:
+                print(f"Simulation Run {i + 1}/{self.sim_runs}")
+        simulation_results = pd.DataFrame({
+            "Expected Return (%)": expected_portfolio_returns_runs * 100,
+            "Volatility (%)": volatility_runs * 100,
+            "Sharpe Ratio": sharpe_ratio_runs,
+        })
+        weights_df = pd.DataFrame(weights_runs, columns=self.adjusted_closing_prices_df.columns)
+        combined_results = pd.concat([simulation_results, weights_df], axis=1)
+        return combined_results, volatility_runs, expected_portfolio_returns_runs, sharpe_ratio_runs
+
+    def plot_simulation_results(self, volatility_runs, expected_portfolio_returns_runs, sharpe_ratio_runs):
+        sim_out_df = pd.DataFrame({
+            'Volatility': volatility_runs.tolist(),
+            'Portfolio_Return': expected_portfolio_returns_runs.tolist(),
+            'Sharpe_Ratio': sharpe_ratio_runs.tolist()
+        })
+        
+        # Identify the portfolio with the highest Sharpe ratio
+        optimal_index = sim_out_df['Sharpe_Ratio'].idxmax()
+        optimal_volatility = sim_out_df.loc[optimal_index, 'Volatility']
+        optimal_portfolio_return = sim_out_df.loc[optimal_index, 'Portfolio_Return']
+
+        # Create a scatter plot
+        fig = px.scatter(
+            sim_out_df,
+            x='Volatility',
+            y='Portfolio_Return',
+            color='Sharpe_Ratio',
+            size='Sharpe_Ratio',
+            hover_data=['Sharpe_Ratio'],
+            labels={
+                'Volatility': 'Portfolio Volatility (%)',
+                'Portfolio_Return': 'Expected Return (%)',
+                'Sharpe_Ratio': 'Sharpe Ratio'
+            },
+            title="Monte Carlo Simulation: Portfolio Volatility vs Expected Return"
+        )
+
+        # Highlight the optimal portfolio point (highest Sharpe ratio)
+        fig.add_trace(go.Scatter(
+            x=[optimal_volatility],
+            y=[optimal_portfolio_return],
+            mode='markers',
+            name='Optimal Portfolio',
+            marker=dict(size=25, color='red', symbol='x')
+        ))
+        
+        # Calculate the Capital Allocation Line (CAL)
+        cal_x = np.linspace(0, max(volatility_runs), 100)
+        cal_y = self.risk_free_rate + cal_x * (optimal_portfolio_return - self.risk_free_rate) / optimal_volatility
+
+        # Add the CAL to the plot
+        fig.add_trace(go.Scatter(
+            x=cal_x,
+            y=cal_y,
+            mode='lines',
+            name='Capital Allocation Line (CAL)',
+            line=dict(color='green', dash='dash')
+        ))
+
+        # Customize the chart layout
+        fig.update_layout(
+            coloraxis_colorbar=dict(title='Sharpe Ratio', dtick=5),
+            plot_bgcolor="white",
+            xaxis=dict(gridcolor='lightgray'),
+            yaxis=dict(gridcolor='lightgray'),
+            font=dict(size=12)
+        )
+
+        # Show the chart
+        fig.show()
+
+    def optimize_portfolio(self):
+        mean_returns = self.daily_returns_df.mean()
+        cov_matrix = self.daily_returns_df.cov()
+
+        def portfolio_performance(weights):
+            returns = np.sum(weights * mean_returns) * 252
+            std_dev = np.sqrt(np.dot(weights.T, np.dot(cov_matrix * 252, weights)))
+            return returns, std_dev
+
+        def neg_sharpe_ratio(weights):
+            p_returns, p_std_dev = portfolio_performance(weights)
+            return -(p_returns - self.risk_free_rate) / p_std_dev
+
+        initial_guess = np.array(len(self.tickers) * [1. / len(self.tickers)])
+        constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
+        bounds = tuple((0, 1) for _ in range(len(self.tickers)))
+
+        optimized_result = minimize(neg_sharpe_ratio, initial_guess, method='SLSQP', bounds=bounds, constraints=constraints)
+        optimal_weights = optimized_result.x
+        expected_return, volatility = portfolio_performance(optimal_weights)
+        return optimal_weights, expected_return, volatility
+
+    def plot_portfolio_vs_benchmarks(self, optimal_portfolio_df, equal_weighted_portfolio_df):
+        benchmark_scaled = self.price_scaling(self.benchmark_data)
+        optimal_portfolio_scaled = optimal_portfolio_df['Portfolio Value [$]'] / optimal_portfolio_df['Portfolio Value [$]'].iloc[0]
+        equal_weighted_portfolio_scaled = equal_weighted_portfolio_df['Portfolio Value [$]'] / equal_weighted_portfolio_df['Portfolio Value [$]'].iloc[0]
+        combined_df = benchmark_scaled.copy()
+        combined_df['Optimal Portfolio'] = optimal_portfolio_scaled
+        combined_df['Equal Weighted Portfolio'] = equal_weighted_portfolio_scaled
+        self.plot_financial_data(combined_df, "Portfolio vs Benchmark Indices", "Scaled Value")
+
+    def display_results(self, simulation_results):
+        while True:
+            print("\nHow would you like to organize the output?")
+            print("1. Highest Expected Return")
+            print("2. Lowest Expected Return")
+            print("3. Highest Volatility")
+            print("4. Lowest Volatility")
+            print("5. Highest Sharpe Ratio")
+            print("6. Lowest Sharpe Ratio")
+            print("7. Done (Exit)")
+            sort_choice = input("Enter your choice (1-7): ")
+            if sort_choice == "7":
+                print("\nThank you! Exiting the display options.")
+                break
+            sort_map = {
+                "1": ("Expected Return (%)", False),
+                "2": ("Expected Return (%)", True),
+                "3": ("Volatility (%)", False),
+                "4": ("Volatility (%)", True),
+                "5": ("Sharpe Ratio", False),
+                "6": ("Sharpe Ratio", True),
+            }
+            if sort_choice in sort_map:
+                sort_column, ascending = sort_map[sort_choice]
+                sorted_results = simulation_results.sort_values(by=sort_column, ascending=ascending)
+                print(f"\nSorted Monte Carlo Simulation Results by {'Highest' if not ascending else 'Lowest'} {sort_column}:")
+                print(sorted_results.head(10))
+            else:
+                print("\nInvalid choice. Please select a valid option.")
+
+if __name__ == "__main__":
+    tickers = input("Enter stock tickers separated by commas: ").split(',')
+    print("[1] 1 year")
+    print("[3] 3 years")
+    print("[5] 5 years")
+    print("[10] 10 years")
+    time_frame = int(input("Enter the number corresponding to the time frame: "))
+
+    stock_analysis = StockAnalysis(tickers, time_frame)
+
+    stock_analysis.save_to_csv(stock_analysis.data, 'adjusted_closing_prices.csv')
+    stock_analysis.save_to_csv(stock_analysis.daily_returns_df, 'daily_returns.csv')
+
+    # Run Monte Carlo simulation at the start
+    simulation_results, volatility_runs, expected_portfolio_returns_runs, sharpe_ratio_runs = stock_analysis.monte_carlo_simulation()
+
+    optimal_weights, expected_return, volatility = stock_analysis.optimize_portfolio()
+    equal_weights = stock_analysis.generate_equal_weights(len(tickers))
+    print("\nOptimal Portfolio Weights:")
+    for ticker, weight in zip(tickers, optimal_weights):
+        print(f"{ticker}: {weight:.2%}")
+
+    # Display expected return, volatility, and total ROI
+    final_value = stock_analysis.asset_allocation(stock_analysis.adjusted_closing_prices_df, optimal_weights)['Portfolio Value [$]'].iloc[-1]
+    initial_value = stock_analysis.initial_investment
+    total_roi = ((final_value - initial_value) / initial_value) * 100
+    print(f"\nExpected Return: {expected_return:.2%}")
+    print(f"Volatility (Standard Deviation): {volatility:.2%}")
+    print(f"Total ROI: {total_roi:.2f}%")
+
+    optimal_portfolio_df = stock_analysis.asset_allocation(stock_analysis.adjusted_closing_prices_df, optimal_weights)
+    equal_weighted_portfolio_df = stock_analysis.asset_allocation(stock_analysis.adjusted_closing_prices_df, equal_weights)
+
+    # Plot the charts in the specified order
+    stock_analysis.plot_histogram()
+    stock_analysis.plot_stock_prices()
+    stock_analysis.plot_scaled_prices()
+    stock_analysis.plot_correlation_matrix()
+    stock_analysis.plot_simulation_results(volatility_runs, expected_portfolio_returns_runs, sharpe_ratio_runs)
+    stock_analysis.plot_portfolio_vs_benchmarks(optimal_portfolio_df, equal_weighted_portfolio_df)
+
+    # Ask the user how they would like to display the simulation results
+    stock_analysis.display_results(simulation_results)
