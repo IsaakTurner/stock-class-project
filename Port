@@ -8,7 +8,12 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from scipy.optimize import minimize
 import pandas_datareader.data as web
+import requests
+from bs4 import BeautifulSoup
+import os
+import plotly.io as pio  # Add this import
 
+### ---- Class Initialization ---- ###
 class StockAnalysis:
     def __init__(self, tickers, time_frame):
         self.tickers = tickers
@@ -17,18 +22,18 @@ class StockAnalysis:
         self.risk_free_rate = self.get_risk_free_rate()
         self.sim_runs = self.determine_simulation_runs()
         self.start_date, self.end_date = self.calculate_dates()
-        self.data = self.get_stock_data()
+        self.data = self.get_all_stock_data()  # Renamed method
         self.adjusted_closing_prices_df = self.data.filter(regex='_Adj_Close$', axis=1)
         self.daily_returns_df = self.calculate_daily_returns()
         self.benchmark_tickers = ["^GSPC", "^DJI", "QQQ", "^IXIC"]  # S&P 500, Dow Jones, QQQ, Nasdaq
         self.benchmark_data = self.get_benchmark_data()
 
+### ---- Utility Functions ---- ###
     def get_risk_free_rate(self):
         end_date = dt.datetime.now()
         start_date = end_date - dt.timedelta(days=30)
         ten_year_rate = web.DataReader('DGS10', 'fred', start_date, end_date)
         risk_free_rate = ten_year_rate.iloc[-1].values[0] / 100  # Convert to decimal
-        print(f"Risk-free rate (10-year Treasury rate): {risk_free_rate:.2%}")
         return risk_free_rate
 
     def determine_simulation_runs(self):
@@ -55,7 +60,8 @@ class StockAnalysis:
             start_date = end_date - dt.timedelta(days=365)
         return start_date, end_date
 
-    def get_stock_data(self):
+### ---- Data Retrieval Functions ---- ###
+    def get_all_stock_data(self):  # Renamed method
         data_frames = []
         for ticker in self.tickers:
             stock = yf.Ticker(ticker)
@@ -89,6 +95,7 @@ class StockAnalysis:
     def calculate_daily_returns(self):
         return self.adjusted_closing_prices_df.pct_change().dropna()
 
+### ---- Analysis and Plotting Functions ---- ###
     def save_to_csv(self, df, filename):
         df.to_csv(filename, index=True)
 
@@ -106,8 +113,10 @@ class StockAnalysis:
             xaxis_title="Date",
             yaxis_title=y_label,
             legend_title="Legend",
-            template="seaborn",
-            plot_bgcolor="white"
+            template="plotly_dark",
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            font=dict(color='white')
         )
         fig.show()
 
@@ -117,8 +126,10 @@ class StockAnalysis:
             title="Histogram of Daily Percent Returns",
             xaxis_title="Daily % Change",
             yaxis_title="Frequency",
-            template="seaborn",
-            plot_bgcolor="white"
+            template="plotly_dark",
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            font=dict(color='white')
         )
         fig.show()
 
@@ -162,13 +173,16 @@ class StockAnalysis:
             xaxis_title="Date",
             yaxis_title="Adjusted Close Price",
             legend_title="Stock Tickers and Indicators",
-            template="seaborn",
-            plot_bgcolor="white"
+            template="plotly_dark",
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            font=dict(color='white')
         )
         fig.show()
 
     def plot_correlation_matrix(self):
         correlation_matrix = self.daily_returns_df.corr()
+        plt.style.use('dark_background')
         plt.figure(figsize=(10, 8))
         sns.heatmap(correlation_matrix, annot=True, cmap='crest', fmt=".2f", linewidths=0.5)
         plt.title("Correlation Matrix of Daily Percentage Changes")
@@ -180,6 +194,7 @@ class StockAnalysis:
             scaled_prices_df[column] = raw_prices_df[column] / raw_prices_df[column].iloc[0]
         return scaled_prices_df
 
+### ---- Portfolio Management Functions ---- ###
     def generate_portfolio_weights(self, n):
         weights = np.random.random(n)
         weights /= weights.sum()
@@ -192,18 +207,18 @@ class StockAnalysis:
         portfolio_df = pd.DataFrame(index=df.index)
         scaled_df = self.price_scaling(df)
         for i, stock in enumerate(scaled_df.columns):
-            portfolio_df[stock] = scaled_df[stock] * weights[i] * self.initial_investment
-        portfolio_df['Portfolio Value [$]'] = portfolio_df.sum(axis=1)
-        portfolio_df['Portfolio Daily Return [%]'] = portfolio_df['Portfolio Value [$]'].pct_change(1) * 100
+            portfolio_df[stock] = scaled_df[stock] * weights[i]
+        portfolio_df['Portfolio Value'] = portfolio_df.sum(axis=1)
+        portfolio_df['Portfolio Daily Return [%]'] = portfolio_df['Portfolio Value'].pct_change(1) * 100
         portfolio_df.replace(np.nan, 0, inplace=True)
         return portfolio_df
 
     def simulation_engine(self, df, weights):
         portfolio_df = self.asset_allocation(df, weights)
-        final_value = portfolio_df['Portfolio Value [$]'].iloc[-1]
-        initial_value = portfolio_df['Portfolio Value [$]'].iloc[0]
+        final_value = portfolio_df['Portfolio Value'].iloc[-1]
+        initial_value = portfolio_df['Portfolio Value'].iloc[0]
         return_on_investment = ((final_value - initial_value) / initial_value) * 100
-        portfolio_daily_return_df = portfolio_df.drop(columns=['Portfolio Value [$]', 'Portfolio Daily Return [%]']).pct_change()
+        portfolio_daily_return_df = portfolio_df.drop(columns=['Portfolio Value', 'Portfolio Daily Return [%]']).pct_change()
         expected_portfolio_return = np.sum(weights * portfolio_daily_return_df.mean()) * 252
         covariance = portfolio_daily_return_df.cov() * 252
         expected_volatility = np.sqrt(np.dot(weights, np.dot(covariance, weights)))
@@ -234,6 +249,7 @@ class StockAnalysis:
         combined_results = pd.concat([simulation_results, weights_df], axis=1)
         return combined_results, volatility_runs, expected_portfolio_returns_runs, sharpe_ratio_runs
 
+### ---- Plotting Simulation Results ---- ###
     def plot_simulation_results(self, volatility_runs, expected_portfolio_returns_runs, sharpe_ratio_runs):
         sim_out_df = pd.DataFrame({
             'Volatility': volatility_runs.tolist(),
@@ -287,15 +303,16 @@ class StockAnalysis:
         # Customize the chart layout
         fig.update_layout(
             coloraxis_colorbar=dict(title='Sharpe Ratio', dtick=5),
-            plot_bgcolor="white",
-            xaxis=dict(gridcolor='lightgray'),
-            yaxis=dict(gridcolor='lightgray'),
-            font=dict(size=12)
+            template="plotly_dark",
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            font=dict(color='white')
         )
 
         # Show the chart
         fig.show()
 
+### ---- Portfolio Optimization ---- ###
     def optimize_portfolio(self):
         mean_returns = self.daily_returns_df.mean()
         cov_matrix = self.daily_returns_df.cov()
@@ -320,83 +337,736 @@ class StockAnalysis:
 
     def plot_portfolio_vs_benchmarks(self, optimal_portfolio_df, equal_weighted_portfolio_df):
         benchmark_scaled = self.price_scaling(self.benchmark_data)
-        optimal_portfolio_scaled = optimal_portfolio_df['Portfolio Value [$]'] / optimal_portfolio_df['Portfolio Value [$]'].iloc[0]
-        equal_weighted_portfolio_scaled = equal_weighted_portfolio_df['Portfolio Value [$]'] / equal_weighted_portfolio_df['Portfolio Value [$]'].iloc[0]
+        optimal_portfolio_scaled = optimal_portfolio_df['Portfolio Value'] / optimal_portfolio_df['Portfolio Value'].iloc[0]
+        equal_weighted_portfolio_scaled = equal_weighted_portfolio_df['Portfolio Value'] / equal_weighted_portfolio_df['Portfolio Value'].iloc[0]
         combined_df = benchmark_scaled.copy()
         combined_df['Optimal Portfolio'] = optimal_portfolio_scaled
         combined_df['Equal Weighted Portfolio'] = equal_weighted_portfolio_scaled
         self.plot_financial_data(combined_df, "Portfolio vs Benchmark Indices", "Scaled Value")
 
-    def display_results(self, simulation_results):
-        while True:
-            print("\nHow would you like to organize the output?")
-            print("1. Highest Expected Return")
-            print("2. Lowest Expected Return")
-            print("3. Highest Volatility")
-            print("4. Lowest Volatility")
-            print("5. Highest Sharpe Ratio")
-            print("6. Lowest Sharpe Ratio")
-            print("7. Done (Exit)")
-            sort_choice = input("Enter your choice (1-7): ")
-            if sort_choice == "7":
-                print("\nThank you! Exiting the display options.")
-                break
-            sort_map = {
-                "1": ("Expected Return (%)", False),
-                "2": ("Expected Return (%)", True),
-                "3": ("Volatility (%)", False),
-                "4": ("Volatility (%)", True),
-                "5": ("Sharpe Ratio", False),
-                "6": ("Sharpe Ratio", True),
-            }
-            if sort_choice in sort_map:
-                sort_column, ascending = sort_map[sort_choice]
-                sorted_results = simulation_results.sort_values(by=sort_column, ascending=ascending)
-                print(f"\nSorted Monte Carlo Simulation Results by {'Highest' if not ascending else 'Lowest'} {sort_column}:")
-                print(sorted_results.head(10))
-            else:
-                print("\nInvalid choice. Please select a valid option.")
+### ---- Stock Projection Data ---- ###
+    def get_stock_data(self, ticker):
+        # Fetch data for the given ticker
+        stock = yf.Ticker(ticker)
+        
+        # Get the recent closing price
+        stock_history = stock.history(period='1d')
+        if stock_history.empty:
+            raise ValueError(f"No price data found for {ticker}. The stock might be delisted.")
+        recent_close_price = stock_history['Close'].iloc[0]
+        
+        # Get the TTM EPS (Trailing Twelve Months Earnings Per Share)
+        ttm_eps = stock.info.get('trailingEps', None)
+        if ttm_eps is None:
+            raise ValueError(f"No TTM EPS data available for {ticker}.")
+        
+        # Get the beta
+        beta = stock.info.get('beta', None)
+        if beta is None:
+            raise ValueError(f"No beta data available for {ticker}.")
+        
+        return recent_close_price, ttm_eps, beta
 
+    def get_eps_growth_rate_yahoo(self, ticker):
+        url = f"https://finance.yahoo.com/quote/{ticker}/analysis"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+        response = requests.get(url, headers=headers)
+        soup = BeautifulSoup(response.text, "html.parser")
+        
+        growth_rate = None
+        try:
+            growth_rate_elem = soup.find("td", string="Next 5 Years (per annum)").find_next_sibling("td")
+            growth_rate = float(growth_rate_elem.text.strip('%')) / 100
+        except AttributeError:
+            raise ValueError(f"Could not find EPS growth rate for {ticker} on Yahoo Finance.")
+        return growth_rate
+
+    def get_eps_growth_rate_finviz(self, ticker):
+        url = f"https://finviz.com/quote.ashx?t={ticker}"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+        response = requests.get(url, headers=headers)
+        soup = BeautifulSoup(response.text, "html.parser")
+        
+        growth_rate = None
+        try:
+            growth_rate_elem = soup.find(string="EPS next 5Y").find_next("b")
+            growth_rate = float(growth_rate_elem.text.strip('%')) / 100
+        except AttributeError:
+            raise ValueError(f"Could not find EPS growth rate for {ticker} on Finviz.")
+        return growth_rate
+
+    def get_eps_growth_rate_alpha_vantage(self, ticker):
+        api_key = os.getenv('ALPHA_VANTAGE_API_KEY')
+        url = f"https://www.alphavantage.co/query?function=OVERVIEW&symbol={ticker}&apikey={api_key}"
+        response = requests.get(url)
+        data = response.json()
+        
+        growth_rate = None
+        try:
+            growth_rate = float(data['EPS'] / data['EPS'])
+        except (KeyError, TypeError):
+            raise ValueError(f"Could not find EPS growth rate for {ticker} using Alpha Vantage.")
+        return growth_rate
+
+    def get_historical_pe_ratio(self, ticker):
+        stock = yf.Ticker(ticker)
+        hist = stock.history(period='10y')
+        hist['PE'] = hist['Close'] / stock.info['trailingEps']
+        return hist['PE'].mean()
+
+    def get_industry_pe_ratio(self, ticker):
+        url = f"https://finviz.com/quote.ashx?t={ticker}"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+        response = requests.get(url, headers=headers)
+        soup = BeautifulSoup(response.text, "html.parser")
+        
+        industry_pe = None
+        try:
+            industry_pe_elem = soup.find(string="P/E").find_next("b")
+            industry_pe = float(industry_pe_elem.text.strip())
+        except AttributeError:
+            raise ValueError(f"Could not find industry P/E ratio for {ticker} on Finviz.")
+        return industry_pe
+
+    def calculate_future_price(self, ttm_eps, eps_growth_rate, future_pe_ratio, years=5):
+        # Calculate the future EPS
+        future_eps = ttm_eps * ((1 + eps_growth_rate) ** years)
+        
+        # Calculate the future stock price
+        future_price = future_eps * future_pe_ratio
+        
+        return future_price
+
+    def calculate_cagr(self, current_price, future_price, years=5):
+        return (future_price / current_price) ** (1 / years) - 1
+
+    def calculate_required_rate_of_return(self, beta, risk_free_rate, market_premium=0.0433):
+        return risk_free_rate + beta * market_premium
+
+    def calculate_present_value(self, future_value, required_rate_of_return, years=5):
+        return future_value / ((1 + required_rate_of_return) ** years)
+
+    def plot_future_price(self, tickers, recent_close_prices, future_prices, current_year, current_quarter, required_rate_of_return):
+        for ticker, recent_close_price, future_price in zip(tickers, recent_close_prices, future_prices):
+            # Get historical data (3 years)
+            historical_data = self.data.filter(regex=f'{ticker}_Adj_Close$', axis=1)
+            historical_dates = historical_data.index
+            historical_prices = historical_data.iloc[:, 0].values
+
+            # Set up the x-axis labels for future projections (quarters)
+            future_quarters = [f"{year} Q{quarter}" for year in range(current_year, current_year + 6) for quarter in range(1, 5)]
+            future_quarters = future_quarters[:21]  # Limit to 5 years + 1 quarter
+            
+            # Generate dates for future quarters
+            future_dates = pd.date_range(start=self.end_date, periods=len(future_quarters), freq='QE')
+
+            # Generate the future prices for each quarter
+            cagr = self.calculate_cagr(recent_close_price, future_price)
+            future_prices = [recent_close_price * ((1 + cagr) ** (i / 4)) for i in range(len(future_quarters))]
+            present_values = [self.calculate_present_value(price, required_rate_of_return, i / 4) for i, price in enumerate(future_prices)]
+
+            # Create the plot
+            fig = go.Figure()
+
+            # Add historical prices
+            fig.add_trace(go.Scatter(
+                x=historical_dates,
+                y=historical_prices,
+                mode='lines',
+                name=f'{ticker} Historical Price',
+                line=dict(color='blue')
+            ))
+
+            # Add vertical line at current date using shapes
+            fig.add_shape(
+                type="line",
+                x0=self.end_date,
+                x1=self.end_date,
+                y0=0,
+                y1=1,
+                yref="paper",
+                line=dict(
+                    color="gray",
+                    dash="dash",
+                )
+            )
+
+            # Add annotation for projection start
+            fig.add_annotation(
+                x=self.end_date,
+                y=1,
+                yref="paper",
+                text="Projection Start",
+                showarrow=False,
+                yshift=10
+            )
+
+            # Add projected prices
+            fig.add_trace(go.Scatter(
+                x=future_dates,
+                y=future_prices,
+                mode='lines',
+                name=f'{ticker} Projected Price',
+                line=dict(color='green')
+            ))
+
+            # Add present values
+            fig.add_trace(go.Scatter(
+                x=future_dates,
+                y=present_values,
+                mode='lines',
+                name=f'{ticker} Present Value',
+                line=dict(color='red')
+            ))
+
+            fig.update_layout(
+                title=f"Historical and Projected Stock Price for {ticker}",
+                xaxis_title="Date",
+                yaxis_title="Price ($)",
+                template="plotly_dark",
+                paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(0,0,0,0)',
+                font=dict(color='white'),
+                showlegend=True,
+                hovermode='x unified'
+            )
+            
+            # Show the chart
+            fig.show()
+
+    def display_projection_table(self, tickers, recent_close_prices, future_prices, required_rate_of_return, current_year):
+        for ticker, recent_close_price, future_price in zip(tickers, recent_close_prices, future_prices):
+            # Generate the future prices and present values for each year
+            years = list(range(current_year, current_year + 6))
+            future_prices = [recent_close_price * ((1 + self.calculate_cagr(recent_close_price, future_price)) ** (year - current_year)) for year in years]
+            present_values = [self.calculate_present_value(price, required_rate_of_return, year - current_year) for year, price in zip(years, future_prices)]
+            expected_returns = [(pv / recent_close_price) - 1 for pv in present_values]
+
+            # Create the table
+            table_data = {
+                "Year": years,
+                "Projected Price": [f"${price:.2f}" for price in future_prices],
+                "Present Value": [f"${pv:.2f}" for pv in present_values],
+                "Expected Return": [f"{er:.2%}" for er in expected_returns]
+            }
+            table_df = pd.DataFrame(table_data)
+
+            # Display the table
+            print(f"\nProjection Table for {ticker}:")
+            print(table_df)
+
+### ---- Future Portfolio Optimization ---- ###
+    def calculate_future_portfolio_metrics(self, tickers, recent_close_prices, future_prices, eps_growth_rates):
+        # Calculate expected annual returns from the 5-year projections
+        future_returns = np.array([(fp/cp)**(1/5) - 1 for fp, cp in zip(future_prices, recent_close_prices)])
+        
+        # Get historical volatility (risk)
+        historical_volatility = np.array([self.daily_returns_df[f"{ticker}_Adj_Close"].std() * np.sqrt(252) for ticker in tickers])
+        
+        # Calculate growth-adjusted Sharpe ratios
+        growth_adjusted_sharpe = (future_returns - self.risk_free_rate) / historical_volatility
+        
+        return future_returns, historical_volatility, growth_adjusted_sharpe
+
+    def optimize_future_portfolio(self, tickers, future_returns, historical_volatility):
+        n = len(tickers)
+        
+        def future_portfolio_performance(weights):
+            returns = np.sum(weights * future_returns)
+            risk = np.sqrt(np.dot(weights.T, np.dot(np.diag(historical_volatility**2), weights)))
+            return returns, risk
+        
+        def neg_future_sharpe_ratio(weights):
+            p_returns, p_risk = future_portfolio_performance(weights)
+            return -(p_returns - self.risk_free_rate) / p_risk if p_risk > 0 else -999
+        
+        initial_weights = np.array([1/n] * n)
+        constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
+        bounds = tuple((0, 1) for _ in range(n))
+        
+        optimized_result = minimize(neg_future_sharpe_ratio, initial_weights, method='SLSQP', 
+                                  bounds=bounds, constraints=constraints)
+        
+        optimal_weights = optimized_result.x
+        expected_return, expected_risk = future_portfolio_performance(optimal_weights)
+        future_sharpe_ratio = (expected_return - self.risk_free_rate) / expected_risk
+        
+        return optimal_weights, expected_return, expected_risk, future_sharpe_ratio
+
+    def display_future_portfolio_analysis(self, tickers, current_weights, future_weights, 
+                                        future_returns, historical_volatility):
+        # Create comparison DataFrame
+        comparison_data = {
+            'Current Weight': [f"{w:.2%}" for w in current_weights],
+            'Future Weight': [f"{w:.2%}" for w in future_weights],
+            'Expected Return': [f"{r:.2%}" for r in future_returns],
+            'Historical Volatility': [f"{v:.2%}" for v in historical_volatility]
+        }
+        comparison_df = pd.DataFrame(comparison_data, index=tickers)
+        
+        # Calculate portfolio metrics
+        current_portfolio_return = np.sum(current_weights * future_returns)
+        current_portfolio_risk = np.sqrt(np.dot(current_weights.T, np.dot(np.diag(historical_volatility**2), current_weights)))
+        current_sharpe = (current_portfolio_return - self.risk_free_rate) / current_portfolio_risk
+        
+        future_portfolio_return = np.sum(future_weights * future_returns)
+        future_portfolio_risk = np.sqrt(np.dot(future_weights.T, np.dot(np.diag(historical_volatility**2), future_weights)))
+        future_sharpe = (future_portfolio_return - self.risk_free_rate) / future_portfolio_risk
+        
+        # Print results
+        print("\n" + "="*80)
+        print("5-YEAR PORTFOLIO OPTIMIZATION MODELING")
+        print("="*80)
+        
+        print("\nPortfolio Allocation Comparison:")
+        print(comparison_df)
+        
+        print("\nCurrent Portfolio (Based on 5-Year Projections):")
+        print(f"Expected Annual Return: {current_portfolio_return:.2%}")
+        print(f"Expected Annual Volatility: {current_portfolio_risk:.2%}")
+        print(f"Projected Sharpe Ratio: {current_sharpe:.2f}")
+        
+        print("\nOptimized Future Portfolio:")
+        print(f"Expected Annual Return: {future_portfolio_return:.2%}")
+        print(f"Expected Annual Volatility: {future_portfolio_risk:.2%}")
+        print(f"Projected Sharpe Ratio: {future_sharpe:.2f}")
+        
+        # Create visualization of weight changes
+        self.plot_weight_comparison(tickers, current_weights, future_weights)
+
+    def plot_weight_comparison(self, tickers, current_weights, future_weights):
+        fig = go.Figure()
+        
+        # Add current weights
+        fig.add_trace(go.Bar(
+            name='Current Weights',
+            x=tickers,
+            y=current_weights,
+            marker_color='blue'
+        ))
+        
+        # Add future weights
+        fig.add_trace(go.Bar(
+            name='Future Weights',
+            x=tickers,
+            y=future_weights,
+            marker_color='green'
+        ))
+        
+        # Update layout
+        fig.update_layout(
+            title="Portfolio Weight Comparison: Current vs Future",
+            xaxis_title="Stocks",
+            yaxis_title="Weight",
+            barmode='group',
+            template="plotly_dark",
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            font=dict(color='white')
+        )
+        
+        # Update y-axis to show percentages
+        fig.update_yaxes(tickformat='.0%')
+        
+        fig.show()
+
+### ---- Advanced Price Projection Models ---- ###
+    def calculate_technical_indicators(self, ticker_data):
+        # Calculate technical indicators
+        data = ticker_data.copy()
+        
+        # Moving averages
+        data['SMA_50'] = ticker_data.rolling(window=50).mean()
+        data['SMA_200'] = ticker_data.rolling(window=200).mean()
+        
+        # Momentum indicators
+        data['ROC'] = ticker_data.pct_change(periods=20)  # 20-day Rate of Change
+        data['RSI'] = self.calculate_rsi(ticker_data)
+        
+        # Volatility
+        data['Volatility'] = ticker_data.rolling(window=20).std()
+        
+        return data
+
+    def calculate_rsi(self, data, periods=14):
+        delta = data.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=periods).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=periods).mean()
+        rs = gain / loss
+        return 100 - (100 / (1 + rs))
+
+    def calculate_advanced_price_projection(self, ticker, historical_data, ttm_eps, eps_growth_rate, beta):
+        # Get the data ready
+        ticker_data = historical_data[f'{ticker}_Adj_Close']
+        tech_indicators = self.calculate_technical_indicators(ticker_data)
+        
+        # 1. Technical Analysis Projection
+        current_price = ticker_data.iloc[-1]
+        sma_50 = tech_indicators['SMA_50'].iloc[-1]
+        sma_200 = tech_indicators['SMA_200'].iloc[-1]
+        momentum = tech_indicators['ROC'].iloc[-1]
+        rsi = tech_indicators['RSI'].iloc[-1]
+        
+        # Technical trend factor (bounded)
+        tech_trend = np.clip((sma_50 / sma_200 - 1) + (momentum * 0.5) + ((rsi - 50) / 100), -0.2, 0.2)
+        
+        # 2. Fundamental Analysis
+        fundamental_growth = (1 + eps_growth_rate) ** 5
+        market_risk_premium = 0.0433  # Market risk premium
+        required_return = self.risk_free_rate + beta * market_risk_premium
+        
+        # 3. Market Sentiment Adjustment (bounded)
+        sentiment_factor = np.clip(1 + (tech_trend * 0.2), 0.8, 1.2)
+        
+        # 4. Volatility Adjustment
+        volatility = tech_indicators['Volatility'].iloc[-1]
+        vol_adjustment = np.clip(1 + (volatility * beta), 0.8, 1.2)
+        
+        # Combine all factors for final projection
+        base_projection = current_price * fundamental_growth
+        technical_projection = current_price * (1 + tech_trend) ** 5
+        
+        # Weighted average of different projections
+        final_projection = (
+            base_projection * 0.4 +      # Fundamental weight
+            technical_projection * 0.3 +  # Technical weight
+            (base_projection * sentiment_factor) * 0.2 +  # Sentiment-adjusted weight
+            (base_projection * vol_adjustment) * 0.1      # Volatility-adjusted weight
+        )
+        
+        # Calculate more reasonable confidence intervals
+        annual_volatility = tech_indicators['Volatility'].std() * np.sqrt(252)
+        z_score = 1.96  # 95% confidence interval
+        
+        # Calculate confidence bounds with reasonable limits
+        volatility_factor = annual_volatility * z_score / np.sqrt(5)  # Adjust for 5-year projection
+        upper_bound = final_projection * (1 + volatility_factor)
+        lower_bound = final_projection * (1 - volatility_factor)
+        
+        # Ensure bounds are reasonable (within ±50% of base projection)
+        upper_bound = min(upper_bound, final_projection * 1.5)
+        lower_bound = max(lower_bound, final_projection * 0.5)
+        
+        confidence_range = {
+            'lower_bound': lower_bound,
+            'upper_bound': upper_bound,
+            'base_case': final_projection
+        }
+        
+        return confidence_range
+
+    def plot_advanced_projections(self, ticker, historical_data, confidence_range, recent_close_price, pe_future_price, required_rate_of_return):
+        current_date = self.end_date
+        future_dates = pd.date_range(start=current_date, periods=21, freq='QE')  # 5 years + 1 quarter
+        
+        # Create projection lines
+        base_line = np.linspace(historical_data[f'{ticker}_Adj_Close'].iloc[-1], 
+                              confidence_range['base_case'], len(future_dates))
+        lower_line = np.linspace(historical_data[f'{ticker}_Adj_Close'].iloc[-1], 
+                               confidence_range['lower_bound'], len(future_dates))
+        upper_line = np.linspace(historical_data[f'{ticker}_Adj_Close'].iloc[-1], 
+                               confidence_range['upper_bound'], len(future_dates))
+        
+        # Calculate PE-based projections and present values
+        pe_cagr = self.calculate_cagr(recent_close_price, pe_future_price)
+        pe_projections = [recent_close_price * ((1 + pe_cagr) ** (i / 4)) for i in range(len(future_dates))]
+        present_values = [self.calculate_present_value(price, required_rate_of_return, i / 4) for i, price in enumerate(pe_projections)]
+        
+        # Create the plot
+        fig = go.Figure()
+        
+        # Plot historical data
+        fig.add_trace(go.Scatter(
+            x=historical_data.index,
+            y=historical_data[f'{ticker}_Adj_Close'],
+            mode='lines',
+            name='Historical Price',
+            line=dict(color='blue')
+        ))
+        
+        # Plot technical/fundamental base projection
+        fig.add_trace(go.Scatter(
+            x=future_dates,
+            y=base_line,
+            mode='lines',
+            name='Technical/Fundamental Projection',
+            line=dict(color='green', dash='dash')
+        ))
+        
+        # Plot PE-based projection
+        fig.add_trace(go.Scatter(
+            x=future_dates,
+            y=pe_projections,
+            mode='lines',
+            name='PE-Based Projection',
+            line=dict(color='yellow')
+        ))
+        
+        # Plot present values
+        fig.add_trace(go.Scatter(
+            x=future_dates,
+            y=present_values,
+            mode='lines',
+            name='Present Value (PE-Based)',
+            line=dict(color='red', dash='dot')
+        ))
+        
+        # Add confidence interval
+        fig.add_trace(go.Scatter(
+            x=future_dates,
+            y=upper_line,
+            mode='lines',
+            name='Upper Bound',
+            line=dict(color='rgba(0,255,0,0.2)')
+        ))
+        
+        fig.add_trace(go.Scatter(
+            x=future_dates,
+            y=lower_line,
+            mode='lines',
+            name='Lower Bound',
+            fill='tonexty',
+            line=dict(color='rgba(0,255,0,0.2)')
+        ))
+        
+        # Add vertical line at current date
+        fig.add_shape(
+            type="line",
+            x0=current_date,
+            x1=current_date,
+            y0=0,
+            y1=1,
+            yref="paper",
+            line=dict(color="gray", dash="dash")
+        )
+        
+        # Add annotation for projection start
+        fig.add_annotation(
+            x=current_date,
+            y=1,
+            yref="paper",
+            text="Projection Start",
+            showarrow=False,
+            yshift=10
+        )
+        
+        # Update layout
+        fig.update_layout(
+            title=f"Comprehensive Price Projections for {ticker}",
+            xaxis_title="Date",
+            yaxis_title="Price ($)",
+            template="plotly_dark",
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            font=dict(color='white'),
+            showlegend=True,
+            hovermode='x unified',
+            legend=dict(
+                yanchor="top",
+                y=0.99,
+                xanchor="left",
+                x=0.01
+            )
+        )
+        
+        fig.show()
+
+### ---- Main Execution ---- ###
 if __name__ == "__main__":
-    tickers = input("Enter stock tickers separated by commas: ").split(',')
-    print("[1] 1 year")
-    print("[3] 3 years")
-    print("[5] 5 years")
-    print("[10] 10 years")
-    time_frame = int(input("Enter the number corresponding to the time frame: "))
+    tickers_input = input("Enter the stock tickers (comma-separated): ").strip().upper()
+    tickers = [ticker.strip() for ticker in tickers_input.split(",")]
+    time_frame = 5  # Default to 5 years
 
     stock_analysis = StockAnalysis(tickers, time_frame)
+    
+    print("\n" + "="*80)
+    print("STOCK PORTFOLIO ANALYSIS")
+    print("="*80)
+    print("\nSelected Stocks for Analysis:")
+    print("-" * 40)
+    for i, ticker in enumerate(tickers, 1):
+        print(f"{i}. {ticker}")
+    
+    print("\n" + "-"*80)
+    print("MARKET CONDITIONS & ANALYSIS PARAMETERS")
+    print("-"*80)
+    print(f"Analysis Period: {stock_analysis.start_date.strftime('%Y-%m-%d')} to {stock_analysis.end_date.strftime('%Y-%m-%d')}")
+    print(f"Risk-free Rate: {stock_analysis.risk_free_rate:.2%}")
+    print(f"Market Risk Premium: 4.33%")
+    print(f"Number of Monte Carlo Simulations: {stock_analysis.sim_runs:,}")
+    
+    print("\n" + "-"*80)
+    print("PORTFOLIO OPTIMIZATION")
+    print("-"*80)
+    print("\nRunning Monte Carlo simulation...")
+    sim_results, volatility_runs, expected_portfolio_returns_runs, sharpe_ratio_runs = stock_analysis.monte_carlo_simulation()
+    stock_analysis.plot_simulation_results(volatility_runs, expected_portfolio_returns_runs, sharpe_ratio_runs)
 
-    stock_analysis.save_to_csv(stock_analysis.data, 'adjusted_closing_prices.csv')
-    stock_analysis.save_to_csv(stock_analysis.daily_returns_df, 'daily_returns.csv')
-
-    # Run Monte Carlo simulation at the start
-    simulation_results, volatility_runs, expected_portfolio_returns_runs, sharpe_ratio_runs = stock_analysis.monte_carlo_simulation()
-
+    # Optimize portfolio and display results
+    print("\nOptimizing portfolio...")
     optimal_weights, expected_return, volatility = stock_analysis.optimize_portfolio()
-    equal_weights = stock_analysis.generate_equal_weights(len(tickers))
-    print("\nOptimal Portfolio Weights:")
+    
+    # Print optimization results in a clean table format
+    print("\nOptimal Portfolio Allocation:")
+    print("-" * 50)
+    print(f"{'Ticker':<10} {'Weight':>10}")
+    print("-" * 50)
     for ticker, weight in zip(tickers, optimal_weights):
-        print(f"{ticker}: {weight:.2%}")
+        print(f"{ticker:<10} {weight:>10.2%}")
+    print("-" * 50)
+    print(f"{'Total':<10} {'100.00%':>10}")
+    print("\nPortfolio Metrics:")
+    print(f"Expected Annual Return: {expected_return:.2%}")
+    print(f"Expected Annual Volatility: {volatility:.2%}")
+    print(f"Sharpe Ratio: {(expected_return - stock_analysis.risk_free_rate) / volatility:.2f}")
 
-    # Display expected return, volatility, and total ROI
-    final_value = stock_analysis.asset_allocation(stock_analysis.adjusted_closing_prices_df, optimal_weights)['Portfolio Value [$]'].iloc[-1]
-    initial_value = stock_analysis.initial_investment
-    total_roi = ((final_value - initial_value) / initial_value) * 100
-    print(f"\nExpected Return: {expected_return:.2%}")
-    print(f"Volatility (Standard Deviation): {volatility:.2%}")
-    print(f"Total ROI: {total_roi:.2f}%")
-
+    # Generate and plot portfolio performance
     optimal_portfolio_df = stock_analysis.asset_allocation(stock_analysis.adjusted_closing_prices_df, optimal_weights)
+    equal_weights = stock_analysis.generate_equal_weights(len(tickers))
     equal_weighted_portfolio_df = stock_analysis.asset_allocation(stock_analysis.adjusted_closing_prices_df, equal_weights)
 
-    # Plot the charts in the specified order
-    stock_analysis.plot_histogram()
+    print("\n" + "-"*80)
+    print("PORTFOLIO ANALYSIS CHARTS")
+    print("-"*80)
+    print("\nGenerating visualizations...")
+    stock_analysis.plot_portfolio_vs_benchmarks(optimal_portfolio_df, equal_weighted_portfolio_df)
     stock_analysis.plot_stock_prices()
     stock_analysis.plot_scaled_prices()
+    stock_analysis.plot_stock_prices_with_smas()
     stock_analysis.plot_correlation_matrix()
-    stock_analysis.plot_simulation_results(volatility_runs, expected_portfolio_returns_runs, sharpe_ratio_runs)
-    stock_analysis.plot_portfolio_vs_benchmarks(optimal_portfolio_df, equal_weighted_portfolio_df)
+    stock_analysis.plot_histogram()
 
-    # Ask the user how they would like to display the simulation results
-    stock_analysis.display_results(simulation_results)
+    print("\n" + "-"*80)
+    print("INDIVIDUAL STOCK ANALYSIS")
+    print("-"*80)
+
+    try:
+        # Initialize lists to store results
+        recent_close_prices = []
+        ttm_eps_list = []
+        betas = []
+        future_prices = []
+        eps_growth_rates = []
+        future_pe_ratios = []
+        required_returns = []  # New list to store required returns
+        
+        # Process each ticker
+        for ticker in tickers:
+            try:
+                print(f"\nAnalyzing {ticker}...")
+                print("-" * 40)
+                
+                recent_close_price, ttm_eps, beta = stock_analysis.get_stock_data(ticker)
+                required_rate_of_return = stock_analysis.calculate_required_rate_of_return(beta, stock_analysis.risk_free_rate)
+                
+                # Store required return for later use
+                required_returns.append(required_rate_of_return)
+                
+                print(f"Current Metrics:")
+                print(f"Current Price: ${recent_close_price:.2f}")
+                print(f"TTM EPS: ${ttm_eps:.2f}")
+                print(f"Beta: {beta:.2f}")
+                print(f"Required Return (CAPM): {required_rate_of_return:.2%}")
+
+                # Try to get the EPS growth rate from different sources
+                try:
+                    eps_growth_rate = stock_analysis.get_eps_growth_rate_yahoo(ticker)
+                    print(f"Growth Rate (Yahoo Finance): {eps_growth_rate:.2%}")
+                except ValueError:
+                    try:
+                        eps_growth_rate = stock_analysis.get_eps_growth_rate_finviz(ticker)
+                        print(f"Growth Rate (Finviz): {eps_growth_rate:.2%}")
+                    except ValueError:
+                        eps_growth_rate = stock_analysis.get_eps_growth_rate_alpha_vantage(ticker)
+                        print(f"Growth Rate (Alpha Vantage): {eps_growth_rate:.2%}")
+
+                # Get valuation metrics
+                historical_pe_ratio = stock_analysis.get_historical_pe_ratio(ticker)
+                industry_pe_ratio = stock_analysis.get_industry_pe_ratio(ticker)
+                future_pe_ratio = (historical_pe_ratio + industry_pe_ratio) / 2
+                
+                print("\nValuation Metrics:")
+                print(f"Historical P/E: {historical_pe_ratio:.2f}")
+                print(f"Industry P/E: {industry_pe_ratio:.2f}")
+                print(f"Estimated Future P/E: {future_pe_ratio:.2f}")
+                
+                # Calculate future price
+                future_price = stock_analysis.calculate_future_price(ttm_eps, eps_growth_rate, future_pe_ratio)
+                cagr = stock_analysis.calculate_cagr(recent_close_price, future_price)
+                
+                print("\nGrowth Projections:")
+                print(f"5-Year Price Target: ${future_price:.2f}")
+                print(f"Expected CAGR: {cagr:.2%}")
+
+                # Append results to lists
+                recent_close_prices.append(recent_close_price)
+                ttm_eps_list.append(ttm_eps)
+                betas.append(beta)
+                future_prices.append(future_price)
+                eps_growth_rates.append(eps_growth_rate)
+                future_pe_ratios.append(future_pe_ratio)
+                
+            except ValueError as e:
+                print(f"Error processing {ticker}: {e}")
+
+        # Get the current year and quarter
+        current_date = dt.datetime.now()
+        current_year = current_date.year
+        current_quarter = (current_date.month - 1) // 3 + 1
+        
+        print("\n" + "-"*80)
+        print("PRICE PROJECTIONS AND VALUATIONS")
+        print("-"*80)
+        
+        # Remove the PE-only projection display and keep only the tables
+        for ticker, recent_close_price, future_price, req_return in zip(tickers, recent_close_prices, future_prices, required_returns):
+            print(f"\nProjection Table for {ticker}")
+            print(f"Required Rate of Return (Discount Rate): {req_return:.2%}")
+            print("-" * 80)
+            stock_analysis.display_projection_table([ticker], [recent_close_price], [future_price], req_return, current_year)
+
+        # Add new section for future portfolio optimization
+        future_returns, historical_volatility, growth_adjusted_sharpe = stock_analysis.calculate_future_portfolio_metrics(
+            tickers, recent_close_prices, future_prices, eps_growth_rates)
+        
+        future_weights, future_return, future_risk, future_sharpe = stock_analysis.optimize_future_portfolio(
+            tickers, future_returns, historical_volatility)
+        
+        stock_analysis.display_future_portfolio_analysis(
+            tickers, optimal_weights, future_weights, future_returns, historical_volatility)
+        
+        print("\n" + "-"*80)
+        print("ADVANCED PRICE PROJECTIONS")
+        print("-"*80)
+        
+        # Calculate and display advanced projections for each stock
+        for ticker, ttm_eps, eps_growth_rate, beta, recent_close_price, future_price, req_return in zip(
+            tickers, ttm_eps_list, eps_growth_rates, betas, recent_close_prices, future_prices, required_returns):
+            print(f"\nAdvanced Projection Analysis for {ticker}")
+            print("-" * 40)
+            
+            confidence_range = stock_analysis.calculate_advanced_price_projection(
+                ticker, stock_analysis.data, ttm_eps, eps_growth_rate, beta
+            )
+            
+            print(f"Base Case Projection: ${confidence_range['base_case']:.2f}")
+            print(f"Upper Bound (95% Confidence): ${confidence_range['upper_bound']:.2f}")
+            print(f"Lower Bound (95% Confidence): ${confidence_range['lower_bound']:.2f}")
+            print(f"PE-Based Price Target: ${future_price:.2f}")
+            
+            # Plot combined projections
+            stock_analysis.plot_advanced_projections(
+                ticker, 
+                stock_analysis.data, 
+                confidence_range,
+                recent_close_price,
+                future_price,
+                req_return
+            )
+        
+    except ValueError as e:
+        print(f"Error: {e}")
+        
+    print("\n" + "="*80)
+    print("ANALYSIS COMPLETE")
+    print("="*80) 
